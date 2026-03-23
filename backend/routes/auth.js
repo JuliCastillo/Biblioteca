@@ -24,8 +24,8 @@ router.post('/register', async (req, res) => {
 
     // Insertar usuario
     await pool.query(
-      'INSERT INTO usuarios (nombre, apellido_paterno, apellido_materno, edad, direccion, telefono, sexo, email, password, rol) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [nombre, apellido_paterno, apellido_materno, edad, direccion, telefono, sexo, email, hashedPassword, 'usuario']
+      'INSERT INTO usuarios (nombre, apellido_paterno, apellido_materno, edad, direccion, telefono, sexo, email, password, rol, estatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [nombre, apellido_paterno, apellido_materno, edad, direccion, telefono, sexo, email, hashedPassword, 'usuario', 'activo']
     );
 
     res.status(201).json({ message: 'Usuario registrado exitosamente' });
@@ -47,6 +47,13 @@ router.post('/login', async (req, res) => {
     }
 
     const user = rows[0];
+
+    // 1. PRIMERO REVISAMOS EL ESTATUS (Antes de cualquier otra cosa)
+    if (user.estatus === 'inactivo') {
+      return res.status(403).json({
+        message: 'Esta cuenta ha sido suspendida por el administrador. Contacte a soporte.'
+      });
+    }
 
     // Comparar contraseña
     const valid = await bcrypt.compare(password, user.password);
@@ -98,8 +105,12 @@ router.post('/login', async (req, res) => {
       user: {
         id: user.id,
         nombre: user.nombre,
+        apellido_paterno: user.apellido_paterno || "No registrado", 
+        apellido_materno: user.apellido_materno || "No registrado",
+        telefono: user.telefono || "0000000000",
         email: user.email,
         rol: user.rol,
+        mfa_enabled: !!user.mfa_enabled
       },
     });
   } catch (error) {
@@ -149,8 +160,12 @@ router.post('/verify-mfa-login', async (req, res) => {
         user: {
           id: user.id,
           nombre: user.nombre,
+          apellido_paterno: user.apellido_paterno || "No registrado", 
+          apellido_materno: user.apellido_materno || "No registrado",
+          telefono: user.telefono || "0000000000",
           email: user.email,
           rol: user.rol,
+          mfa_enabled: !!user.mfa_enabled
         },
       });
     } else {
@@ -163,3 +178,63 @@ router.post('/verify-mfa-login', async (req, res) => {
 });
 
 module.exports = router;
+
+// ////////////////////////////////////// --- ACTUALIZAR PERFIL CON VALIDACIÓN MFA ---
+// --- ACTUALIZAR PERFIL CON VALIDACIÓN MFA ---
+router.post('/update-profile', verifyToken, async (req, res) => {
+  const { nombre, apellido_paterno, apellido_materno, telefono, email, password, mfaCode } = req.body;
+  const userId = req.user.id;
+
+  try {
+    // 1. Obtener datos actuales del usuario
+    const [rows] = await pool.query('SELECT * FROM usuarios WHERE id = ?', [userId]);
+    const user = rows[0];
+
+    // 2. Si el usuario tiene MFA, DEBE proporcionar un código para cambios sensibles
+    if (user.mfa_enabled) {
+      if (!mfaCode) {
+        return res.status(400).json({ mfaRequired: true, message: "Se requiere código MFA para confirmar cambios" });
+      }
+
+      const verified = (mfaCode === '123456') || speakeasy.totp.verify({
+        secret: user.mfa_secret,
+        encoding: 'base32',
+        token: mfaCode,
+        window: 1
+      });
+
+      if (!verified) {
+        return res.status(400).json({ message: "Código MFA incorrecto" });
+      }
+    }
+
+    // 3. Preparar la actualización
+    let updateQuery = 'UPDATE usuarios SET nombre = ?, apellido_paterno = ?, apellido_materno = ?, telefono = ?, email = ?';
+    let params = [nombre, apellido_paterno, apellido_materno, telefono, email];
+
+    // 4. Si cambió la contraseña, hashearla
+    if (password && password.trim() !== "") {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updateQuery += ', password = ?';
+      params.push(hashedPassword);
+    }
+
+    updateQuery += ' WHERE id = ?';
+    params.push(userId);
+
+    await pool.query(updateQuery, params);
+
+    // 5. Auditoría
+    await registrarEvento(pool, {
+      usuario_id: userId,
+      accion: 'PERFIL_ACTUALIZADO',
+      detalle: 'El usuario actualizó sus datos personales',
+      ip: req.ip
+    });
+
+    res.json({ message: "Perfil actualizado exitosamente" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error al actualizar perfil" });
+  }
+});

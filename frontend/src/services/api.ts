@@ -1,21 +1,23 @@
 const API_URL = "http://localhost:3001/api";
 
-// Interfaces actualizadas
-interface User {
+// Interfaces actualizadas con todos los campos del formulario y base de datos
+export interface User {
   id: number;
   nombre: string;
   apellido_paterno: string;
   apellido_materno: string;
   email: string;
+  telefono: string;     // <-- Agregado
   rol: "administrador" | "usuario";
-  mfa_enabled?: boolean;
+  mfa_enabled: boolean; // <-- Asegúrate que sea boolean (no opcional)
+  estatus?: string;     // <-- Para el dashboard de Admin
 }
 
-interface LoginResponse {
-  token?: string; // Opcional porque si pide MFA, aún no hay token final
-  user?: User;
-  mfaRequired?: boolean; // Indica si hay que mostrar la pantalla del código
-  tempToken?: string;    // Token temporal para validar el MFA
+export interface LoginResponse {
+  token?: string; 
+  user?: User;          // <-- Ahora User ya tiene 'telefono' y 'mfa_enabled'
+  mfaRequired?: boolean; 
+  tempToken?: string;    
 }
 
 interface RegisterData {
@@ -104,4 +106,20 @@ export async function verifyMfaLoginAPI(tempToken: string, code: string): Promis
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || "Código MFA inválido");
   return data;
+}
+
+/////// 3. ACTUALIZAR PERFIL (Con validación MFA)
+export async function updateProfileAPI(token: string, data: any) {
+  const res = await fetch(`${API_URL}/auth/update-profile`, {
+    method: "POST",
+    headers: { 
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}` 
+    },
+    body: JSON.stringify(data),
+  });
+
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.message || "Error al actualizar");
+  return result;
 }
